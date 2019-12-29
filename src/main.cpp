@@ -2,6 +2,10 @@
 #include <Encoder.h>
 #include <PID_v1.h>
 
+#include <ros.h>
+#include <std_msgs/Empty.h>
+
+
 #define PWMA 3
 #define PWMB 2
 #define MIN_PWM 0
@@ -34,6 +38,8 @@ uint8_t mode=0;
 PID motorA(&motors[0].speed, &motors[0].output, &motors[0].target, motors[0].kp, motors[0].ki, motors[0].kd, DIRECT);
 PID motorB(&motors[1].speed, &motors[1].output, &motors[1].target, motors[1].kp, motors[1].ki, motors[1].kd, DIRECT);
 
+ros::NodeHandle nh;
+
 Encoder encoderA(5, 6);
 Encoder encoderB(7, 8);
 
@@ -41,6 +47,13 @@ Encoder encoderB(7, 8);
 void calculate_speed(long, Motor*);
 int8_t get_serial_parameters(uint8_t*, uint8_t*, double*, double*, double*, double*);
 
+void messageCb( const std_msgs::Empty& toggle_msg)
+{
+  motors[0].target = 0;
+  motors[1].target = 0; 
+}
+
+ros::Subscriber<std_msgs::Empty> sub("shutdown_motors", &messageCb );
 
 void setup() 
 {
@@ -56,6 +69,8 @@ void setup()
   motorA.SetOutputLimits(MIN_PWM, 255); // TODO Find optimal MIN_PWM.
   motorB.SetMode(AUTOMATIC);
   motorB.SetOutputLimits(MIN_PWM, 255);
+  nh.initNode();
+  nh.subscribe(sub);
 }
 
 void loop() 
@@ -100,6 +115,7 @@ void loop()
   motorB.Compute();
   analogWrite(PWMA, motors[0].output);
   analogWrite(PWMB, motors[1].output);
+  nh.spinOnce();
 }
 
 
