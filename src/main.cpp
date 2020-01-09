@@ -15,6 +15,10 @@
 #define CHAN_3 15
 #define PID_SAMPLE_TIME 5
 #define CPR_CONS 29250 
+#define MAX_RPM 7
+#define WHEEL_DIAMETER 0.1
+#define FR_WHEELS_DISTANCE 0.30
+#define LR_WHEELS_DISTANCE 0.235
 
 // Globals
 // TODO find optimal constants.
@@ -34,6 +38,14 @@ struct Motor /* Structs that encapsultes motor control */
   bool dir;
 }motors[2], temp_motor;
 
+struct SpeedCmd
+{
+  float x_vel = 0;
+  float y_vel = 0;
+  float a_vel = 0;
+  unsigned long cmd_time = 0;
+}new_speed, last_speed;
+
 
 uint8_t mode=0;
 
@@ -46,9 +58,12 @@ ros::NodeHandle nh;
 Encoder encoderA(5, 6);
 Encoder encoderB(7, 8);
 
+Kinematics kinematics(Kinematics::DIFFERENTIAL_DRIVE, MAX_RPM, WHEEL_DIAMETER, FR_WHEELS_DISTANCE, LR_WHEELS_DISTANCE);
+
 // Prototypes
 void calculate_speed(long, Motor*);
 int8_t get_serial_parameters(uint8_t*, uint8_t*, double*, double*, double*, double*);
+void commandCallback(const geometry_msgs::Twist& cmd_msg);
 
 void messageCb( const std_msgs::Empty& toggle_msg)
 {
@@ -56,13 +71,13 @@ void messageCb( const std_msgs::Empty& toggle_msg)
   motors[1].target = 0; 
 }
 
-ros::Subscriber<std_msgs::Empty> sub("shutdown_motors", &messageCb );
+ros::Subscriber<geometry_msgs::Twist> cmd_sub("cmd_vel", commandCallback);
 
 void setup() 
 {
   motors[0].pwm_pin = PWMA;
   motors[1].pwm_pin = PWMB;
-  Serial.begin(9600);
+  Serial1.begin(9600);
   motorA.SetSampleTime(PID_SAMPLE_TIME);
   motorB.SetSampleTime(PID_SAMPLE_TIME); // TODO Find optimal sampling time.
   pinMode(motors[0].pwm_pin, OUTPUT);
@@ -73,7 +88,7 @@ void setup()
   motorB.SetMode(AUTOMATIC);
   motorB.SetOutputLimits(MIN_PWM, 255);
   nh.initNode();
-  nh.subscribe(sub);
+  nh.subscribe(cmd_sub);
 }
 
 void loop() 
@@ -84,15 +99,15 @@ void loop()
       if(mode)
         {
           motors[0].target = ((double)pulseIn(CHAN_3, HIGH, 21000))/250; // FIXME pulseIn is breaking and takes too long.
-          Serial.println(motors[0].target);
+          Serial1.println(motors[0].target);
         }
-      Serial.print(motors[0].speed);
-      Serial.print(",");
-      Serial.print(motors[0].output);
-      Serial.print(",");
-      Serial.print(motors[1].speed);
-      Serial.print(",");
-      Serial.println(motors[1].output);
+      Serial1.print(motors[0].speed);
+      Serial1.print(",");
+      Serial1.print(motors[0].output);
+      Serial1.print(",");
+      Serial1.print(motors[1].speed);
+      Serial1.print(",");
+      Serial1.println(motors[1].output);
       calculate_speed(encoderA.read(), &motors[0]);
       calculate_speed(encoderB.read(), &motors[1]);
       last_update = millis();
@@ -106,9 +121,9 @@ void loop()
       // if (motor_id != 0 || motor_id != 1) motor_id = 1;
       char sendbuffer[100];
       sprintf(sendbuffer, "Previous values for motor %u: Mode = %d; Target Speed = %lf; KP = %lf; KI = %lf; KD = %lf", motor_id, mode, motors[motor_id].target, motors[motor_id].kp, motors[motor_id].ki, motors[motor_id].kd);
-      Serial.println(sendbuffer);
+      Serial1.println(sendbuffer);
       sprintf(sendbuffer, "Current values for motor %u: Mode = %d; Target Speed = %lf; KP = %lf; KI = %lf; KD = %lf", motor_id, new_mode, temp_speed, temp_p, temp_i, temp_d);
-      Serial.println(sendbuffer);
+      Serial1.println(sendbuffer);
       mode = new_mode;
       if(mode==0) motors[motor_id].target = temp_speed;
       if(motors[motor_id].kp != temp_p || motors[motor_id].ki != temp_i || motors[motor_id].kd != temp_d) motorA.SetTunings(motors[0].kp, motors[0].ki, motors[0].kd);
@@ -134,11 +149,11 @@ void calculate_speed(long new_point, Motor *motor) // TODO change timing into mi
 int8_t get_serial_parameters(uint8_t* id, uint8_t* mode, double* speed, double* p, double* i, double* d) // TODO try strtol, protect against overflow.
 {
   static int j = 0;
-  while (Serial.available()) 
+  while (Serial1.available()) 
   {
     char param_buffer[100];
     int param_len = 0;
-    param_len = Serial.readBytesUntil(';', param_buffer, sizeof(param_buffer)); // readBytesUntil is timing out
+    param_len = Serial1.readBytesUntil(';', param_buffer, sizeof(param_buffer)); // FIXME readBytesUntil is timing out
     if(param_len == 0) 
       {
         j++;
@@ -154,6 +169,15 @@ int8_t get_serial_parameters(uint8_t* id, uint8_t* mode, double* speed, double* 
     if(j>5) break;
   }
   j=0;
-  while (Serial.available()) Serial.read(); // Clears up buffer.
+  while (Serial1.available()) Serial1.read(); // Clears up buffer.
   return 0;
+}
+
+void commandCallback(const geometry_msgs::Twist& cmd_msg)
+{
+  last_speed = new_speed;
+  new_speed.x_vel = cmd_msg.linear.x;
+  new_speed.y_vel = cmd_msg.linear.y;
+  new_speed.a_vel = cmd_msg.angular.z;
+  new_speed.cmd_time = millis();
 }
