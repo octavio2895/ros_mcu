@@ -1,9 +1,12 @@
 #include <Arduino.h>
 #include <Encoder.h>
 #include <PID_v1.h>
+#include "Kinematics.h"
 
+// ROS Message Types
 #include <ros.h>
 #include <std_msgs/Empty.h>
+#include <nav_msgs/Odometry.h>
 
 
 #define PWMA 3
