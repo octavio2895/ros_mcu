@@ -14,7 +14,7 @@
 #define MIN_PWM 0
 #define CHAN_3 15
 #define PID_SAMPLE_TIME 5
-#define CPR_CONS 29250 
+#define CPR_CONS 1100 
 #define MAX_RPM 7
 #define WHEEL_DIAMETER 0.1
 #define FR_WHEELS_DISTANCE 0.30
@@ -83,6 +83,8 @@ void setup()
   pinMode(motors[0].pwm_pin, OUTPUT);
   pinMode(motors[1].pwm_pin, OUTPUT);
   pinMode(CHAN_3, INPUT);
+  pinMode(5, INPUT_PULLUP);
+  pinMode(6, INPUT_PULLUP);
   motorA.SetMode(AUTOMATIC);
   motorA.SetOutputLimits(MIN_PWM, 255); // TODO Find optimal MIN_PWM.
   motorB.SetMode(AUTOMATIC);
@@ -112,7 +114,7 @@ void loop()
       calculate_speed(encoderB.read(), &motors[1]);
       last_update = millis();
     }
-  if (Serial.available())
+  if (Serial1.available())
     {
       double temp_speed = 0, temp_p, temp_i, temp_d;
       uint8_t new_mode, motor_id = 0;
@@ -146,30 +148,70 @@ void calculate_speed(long new_point, Motor *motor) // TODO change timing into mi
   motor->last_millis = millis();
 }
 
+// int8_t get_serial_parameters(uint8_t* id, uint8_t* mode, double* speed, double* p, double* i, double* d) // TODO try strtol, protect against overflow.
+// {
+//   static int j = 0;
+//   while (Serial1.available()) 
+//   {
+//     char param_buffer[100];
+//     int param_len = 0;
+//     param_len = Serial1.readBytesUntil(';', param_buffer, sizeof(param_buffer)); // FIXME readBytesUntil is timing out
+//     if(param_len == 0) 
+//       {
+//         j++;
+//         continue;
+//       }
+//     if(j==0) sscanf(param_buffer, "%u", id);
+//     else if(j==1) sscanf(param_buffer, "%u", mode);
+//     else if(j==2) sscanf(param_buffer, "%lf", speed);
+//     else if(j==3) sscanf(param_buffer, "%lf", p);
+//     else if(j==4) sscanf(param_buffer, "%lf", i);
+//     else if(j==5) sscanf(param_buffer, "%lf", d);
+//     j++;
+//     if(j>5) break;
+//   }
+//   j=0;
+//   while (Serial1.available()) Serial1.read(); // Clears up buffer.
+//   return 0;
+// }
+
 int8_t get_serial_parameters(uint8_t* id, uint8_t* mode, double* speed, double* p, double* i, double* d) // TODO try strtol, protect against overflow.
 {
+  char serial_buf[100]; // TODO must protect against overflow
+  uint8_t k = 0;
   static int j = 0;
-  while (Serial1.available()) 
-  {
-    char param_buffer[100];
-    int param_len = 0;
-    param_len = Serial1.readBytesUntil(';', param_buffer, sizeof(param_buffer)); // FIXME readBytesUntil is timing out
-    if(param_len == 0) 
-      {
-        j++;
-        continue;
-      }
-    if(j==0) sscanf(param_buffer, "%u", id);
-    else if(j==1) sscanf(param_buffer, "%u", mode);
-    else if(j==2) sscanf(param_buffer, "%lf", speed);
-    else if(j==3) sscanf(param_buffer, "%lf", p);
-    else if(j==4) sscanf(param_buffer, "%lf", i);
-    else if(j==5) sscanf(param_buffer, "%lf", d);
-    j++;
-    if(j>5) break;
-  }
-  j=0;
-  while (Serial1.available()) Serial1.read(); // Clears up buffer.
+
+  while(Serial1.available() && k < sizeof(serial_buf))
+    {
+      serial_buf[k] = Serial1.read();
+      k++;
+      delay(10); // TODO find a better way to wait;
+    }
+  Serial1.print("Message recived:");
+  Serial1.println(serial_buf);
+  
+  char param_buffer[20];
+  char *p1 = serial_buf, *p2;
+  
+  for(int j=0; j<5; j++)
+    {
+      p2 = strchr(p1, ';');
+      if(p2 == NULL)break;
+      if((p2-p1)>sizeof(param_buffer))
+        {
+          p1 = p2+1;
+          continue;
+        }
+      memset(param_buffer, 0, sizeof(param_buffer));
+      memcpy(param_buffer, p1, p2-p1);
+      p1 = p2+1;
+      if(j==0) sscanf(param_buffer, "%u", id);
+      else if(j==1) sscanf(param_buffer, "%u", mode);
+      else if(j==2) sscanf(param_buffer, "%lf", speed);
+      else if(j==3) sscanf(param_buffer, "%lf", p);
+      else if(j==4) sscanf(param_buffer, "%lf", i);
+      else if(j==5) sscanf(param_buffer, "%lf", d);
+    }
   return 0;
 }
 
