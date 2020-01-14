@@ -1,7 +1,6 @@
 #include <Arduino.h>
 #include <Encoder.h>
 #include <PID_v1.h>
-#include "Kinematics.h"
 
 // ROS Message Types
 #include <ros.h>
@@ -19,6 +18,7 @@
 #define WHEEL_DIAMETER 0.1
 #define FR_WHEELS_DISTANCE 0.30
 #define LR_WHEELS_DISTANCE 0.235
+#define CMD_TIMEOUT 100
 
 // Globals
 // TODO find optimal constants.
@@ -26,7 +26,7 @@
 
 struct Motor /* Structs that encapsultes motor control */
 {
-  double kp = 700;
+  double kp = 100;
   double ki = 120;
   double kd = 15;
   double target = 0;
@@ -40,13 +40,12 @@ struct Motor /* Structs that encapsultes motor control */
 
 struct SpeedCmd
 {
-  float x_vel = 0;
-  float y_vel = 0;
-  float a_vel = 0;
+  float lin_vel = 0;
+  float ang_vel = 0;
   unsigned long cmd_time = 0;
 }new_speed, last_speed;
 
-
+bool vel_cmd_flag = 0;
 uint8_t mode=0;
 
 // Objects
@@ -58,26 +57,20 @@ ros::NodeHandle nh;
 Encoder encoderA(5, 6);
 Encoder encoderB(7, 8);
 
-Kinematics kinematics(Kinematics::DIFFERENTIAL_DRIVE, MAX_RPM, WHEEL_DIAMETER, FR_WHEELS_DISTANCE, LR_WHEELS_DISTANCE);
-
 // Prototypes
 void calculate_speed(long, Motor*);
 int8_t get_serial_parameters(uint8_t*, uint8_t*, double*, double*, double*, double*);
-void commandCallback(const geometry_msgs::Twist& cmd_msg);
+void vel_callback(const geometry_msgs::Twist& cmd_msg);
+void check_cmds();
 
-void messageCb( const std_msgs::Empty& toggle_msg)
-{
-  motors[0].target = 0;
-  motors[1].target = 0; 
-}
-
-ros::Subscriber<geometry_msgs::Twist> cmd_sub("cmd_vel", commandCallback);
+ros::Subscriber<geometry_msgs::Twist> cmd_sub("cmd_vel", vel_callback);
 
 void setup() 
 {
   motors[0].pwm_pin = PWMA;
   motors[1].pwm_pin = PWMB;
   Serial1.begin(9600);
+  Serial.begin(9600);
   motorA.SetSampleTime(PID_SAMPLE_TIME);
   motorB.SetSampleTime(PID_SAMPLE_TIME); // TODO Find optimal sampling time.
   pinMode(motors[0].pwm_pin, OUTPUT);
@@ -114,13 +107,12 @@ void loop()
       calculate_speed(encoderB.read(), &motors[1]);
       last_update = millis();
     }
-  if (Serial1.available())
+  double static temp_speed = 0;
+  double temp_p, temp_i, temp_d;
+  uint8_t new_mode, motor_id = 0;
+  temp_p=motors[motor_id].kp, temp_i=motors[motor_id].ki, temp_d=motors[motor_id].kd, new_mode = mode;
+  if(get_serial_parameters(&motor_id, &new_mode, &temp_speed, &temp_p, &temp_i, &temp_d)) // TODO rewrite this.
     {
-      double temp_speed = 0, temp_p, temp_i, temp_d;
-      uint8_t new_mode, motor_id = 0;
-      temp_p=motors[motor_id].kp, temp_i=motors[motor_id].ki, temp_d=motors[motor_id].kd, new_mode = mode;
-      get_serial_parameters(&motor_id, &new_mode, &temp_speed, &temp_p, &temp_i, &temp_d);
-      // if (motor_id != 0 || motor_id != 1) motor_id = 1;
       char sendbuffer[100];
       sprintf(sendbuffer, "Previous values for motor %u: Mode = %d; Target Speed = %lf; KP = %lf; KI = %lf; KD = %lf", motor_id, mode, motors[motor_id].target, motors[motor_id].kp, motors[motor_id].ki, motors[motor_id].kd);
       Serial1.println(sendbuffer);
@@ -129,8 +121,14 @@ void loop()
       mode = new_mode;
       if(mode==0) motors[motor_id].target = temp_speed;
       if(motors[motor_id].kp != temp_p || motors[motor_id].ki != temp_i || motors[motor_id].kd != temp_d) motorA.SetTunings(motors[0].kp, motors[0].ki, motors[0].kd);
+      Serial1.print("KP: ");
+      Serial1.println(motors[motor_id].kp);
+      Serial1.print("KI: ");
+      Serial1.println(motors[motor_id].ki);
+      Serial1.print("KD: ");
+      Serial.println(motors[motor_id].kd);
     }
-
+  check_cmds();
   motorA.Compute();
   motorB.Compute();
   analogWrite(PWMA, motors[0].output);
@@ -148,78 +146,98 @@ void calculate_speed(long new_point, Motor *motor) // TODO change timing into mi
   motor->last_millis = millis();
 }
 
-// int8_t get_serial_parameters(uint8_t* id, uint8_t* mode, double* speed, double* p, double* i, double* d) // TODO try strtol, protect against overflow.
-// {
-//   static int j = 0;
-//   while (Serial1.available()) 
-//   {
-//     char param_buffer[100];
-//     int param_len = 0;
-//     param_len = Serial1.readBytesUntil(';', param_buffer, sizeof(param_buffer)); // FIXME readBytesUntil is timing out
-//     if(param_len == 0) 
-//       {
-//         j++;
-//         continue;
-//       }
-//     if(j==0) sscanf(param_buffer, "%u", id);
-//     else if(j==1) sscanf(param_buffer, "%u", mode);
-//     else if(j==2) sscanf(param_buffer, "%lf", speed);
-//     else if(j==3) sscanf(param_buffer, "%lf", p);
-//     else if(j==4) sscanf(param_buffer, "%lf", i);
-//     else if(j==5) sscanf(param_buffer, "%lf", d);
-//     j++;
-//     if(j>5) break;
-//   }
-//   j=0;
-//   while (Serial1.available()) Serial1.read(); // Clears up buffer.
-//   return 0;
-// }
-
 int8_t get_serial_parameters(uint8_t* id, uint8_t* mode, double* speed, double* p, double* i, double* d) // TODO try strtol, protect against overflow.
 {
-  char serial_buf[100]; // TODO must protect against overflow
-  uint8_t k = 0;
-  static int j = 0;
-
-  while(Serial1.available() && k < sizeof(serial_buf))
+  static char serial_buf[100]; // TODO must protect against overflow
+  static uint8_t k = 0;
+  static unsigned int timeout_time = 0;
+  static bool timer_flag = 0;
+  if (!timer_flag && Serial1.available()) 
     {
-      serial_buf[k] = Serial1.read();
-      k++;
-      delay(10); // TODO find a better way to wait;
+      Serial.println("Setting timeout flag");
+      memset(serial_buf, 0, sizeof(serial_buf));
+      timeout_time = millis() + 1000;
+      timer_flag = 1;
+      k = 0;
     }
-  Serial1.print("Message recived:");
-  Serial1.println(serial_buf);
-  
-  char param_buffer[20];
-  char *p1 = serial_buf, *p2;
-  
-  for(int j=0; j<5; j++)
+
+  if(millis() < timeout_time && Serial1.available())
     {
-      p2 = strchr(p1, ';');
-      if(p2 == NULL)break;
-      if((p2-p1)>sizeof(param_buffer))
+      Serial.println("Reading data");
+      while(Serial1.available() && k < sizeof(serial_buf))
         {
-          p1 = p2+1;
-          continue;
+          serial_buf[k] = Serial1.read();
+          k++;
         }
-      memset(param_buffer, 0, sizeof(param_buffer));
-      memcpy(param_buffer, p1, p2-p1);
-      p1 = p2+1;
-      if(j==0) sscanf(param_buffer, "%u", id);
-      else if(j==1) sscanf(param_buffer, "%u", mode);
-      else if(j==2) sscanf(param_buffer, "%lf", speed);
-      else if(j==3) sscanf(param_buffer, "%lf", p);
-      else if(j==4) sscanf(param_buffer, "%lf", i);
-      else if(j==5) sscanf(param_buffer, "%lf", d);
+      return 0;
+    }
+  if (millis() > timeout_time && timer_flag)
+    {
+      k = 0;
+      timer_flag = 0; 
+      Serial1.print("Message recived:");
+      Serial1.println(serial_buf);
+      char param_buffer[20];
+      char *p1 = serial_buf, *p2;
+      for(int j=0; j<6; j++)
+        {
+          Serial1.print("Top print: ");
+          Serial1.println(j);
+          p2 = strchr(p1, ';');
+          if(p2 == NULL)break;
+          if((p2-p1) > sizeof(param_buffer))
+            {
+              p1 = p2+1;
+              continue;
+            }
+          if((p2-p1) == 0)
+            {
+              p1 = p2+1;
+              continue;
+            }
+          memset(param_buffer, 0, sizeof(param_buffer));
+          memcpy(param_buffer, p1, p2-p1);
+          p1 = p2+1;
+          if(param_buffer[0] == NULL)
+            {
+              continue;
+            }
+          Serial1.print("Bottom print: ");
+          Serial1.println(j);
+          if(j==0) sscanf(param_buffer, "%u", id);
+          else if(j==1) sscanf(param_buffer, "%u", mode);
+          else if(j==2) sscanf(param_buffer, "%lf", speed);
+          else if(j==3) sscanf(param_buffer, "%lf", p);
+          else if(j==4) sscanf(param_buffer, "%lf", i);
+          else if(j==5) sscanf(param_buffer, "%lf", d);
+        }
+      return 1;
     }
   return 0;
 }
 
-void commandCallback(const geometry_msgs::Twist& cmd_msg)
+void vel_callback(const geometry_msgs::Twist& cmd_msg)
 {
   last_speed = new_speed;
-  new_speed.x_vel = cmd_msg.linear.x;
-  new_speed.y_vel = cmd_msg.linear.y;
-  new_speed.a_vel = cmd_msg.angular.z;
+  new_speed.lin_vel = cmd_msg.linear.x;
+  new_speed.ang_vel = cmd_msg.angular.x;
   new_speed.cmd_time = millis();
+  vel_cmd_flag = 1;
+}
+
+void check_cmds() // TODO change flags var to array and use memcmp with prev state; Abstract cmd exec into separate functions
+{
+  if(vel_cmd_flag)
+    {
+      if(millis() > new_speed.cmd_time + CMD_TIMEOUT)
+        {
+          motors[0].speed = (new_speed.lin_vel - LR_WHEELS_DISTANCE*new_speed.ang_vel)/(2*PI);
+          motors[1].speed = (new_speed.lin_vel + LR_WHEELS_DISTANCE*new_speed.ang_vel)/(2*PI);
+        }
+      else
+        {
+          motors[0].speed = 0;
+          motors[1].speed = 0;
+        }
+    }
 }
