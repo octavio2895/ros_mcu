@@ -6,6 +6,7 @@
 #include <ros.h>
 #include <std_msgs/Empty.h>
 #include <nav_msgs/Odometry.h>
+#include <geometry_msgs/Twist.h>
 
 
 #define PWMA 3
@@ -18,7 +19,7 @@
 #define WHEEL_DIAMETER 0.1
 #define FR_WHEELS_DISTANCE 0.30
 #define LR_WHEELS_DISTANCE 0.235
-#define CMD_TIMEOUT 100
+#define CMD_TIMEOUT 1000
 
 // Globals
 // TODO find optimal constants.
@@ -46,7 +47,9 @@ struct SpeedCmd
 }new_speed, last_speed;
 
 bool vel_cmd_flag = 0;
+bool timeout_flag = 0;
 uint8_t mode=0;
+nav_msgs::Odometry odom;
 
 // Objects
 PID motorA(&motors[0].speed, &motors[0].output, &motors[0].target, motors[0].kp, motors[0].ki, motors[0].kd, DIRECT);
@@ -62,15 +65,17 @@ void calculate_speed(long, Motor*);
 int8_t get_serial_parameters(uint8_t*, uint8_t*, double*, double*, double*, double*);
 void vel_callback(const geometry_msgs::Twist& cmd_msg);
 void check_cmds();
+void calc_odom();
 
 ros::Subscriber<geometry_msgs::Twist> cmd_sub("cmd_vel", vel_callback);
+
+ros::Publisher pub_odometry("odom", &odom);
 
 void setup() 
 {
   motors[0].pwm_pin = PWMA;
   motors[1].pwm_pin = PWMB;
   Serial1.begin(9600);
-  Serial.begin(9600);
   motorA.SetSampleTime(PID_SAMPLE_TIME);
   motorB.SetSampleTime(PID_SAMPLE_TIME); // TODO Find optimal sampling time.
   pinMode(motors[0].pwm_pin, OUTPUT);
@@ -84,6 +89,7 @@ void setup()
   motorB.SetOutputLimits(MIN_PWM, 255);
   nh.initNode();
   nh.subscribe(cmd_sub);
+  nh.advertise(pub_odometry);
 }
 
 void loop() 
@@ -111,7 +117,7 @@ void loop()
   double temp_p, temp_i, temp_d;
   uint8_t new_mode, motor_id = 0;
   temp_p=motors[motor_id].kp, temp_i=motors[motor_id].ki, temp_d=motors[motor_id].kd, new_mode = mode;
-  if(get_serial_parameters(&motor_id, &new_mode, &temp_speed, &temp_p, &temp_i, &temp_d)) // TODO rewrite this.
+  if(get_serial_parameters(&motor_id, &new_mode, &temp_speed, &temp_p, &temp_i, &temp_d)) // TODO rewrite this, values are not updating correctly.
     {
       char sendbuffer[100];
       sprintf(sendbuffer, "Previous values for motor %u: Mode = %d; Target Speed = %lf; KP = %lf; KI = %lf; KD = %lf", motor_id, mode, motors[motor_id].target, motors[motor_id].kp, motors[motor_id].ki, motors[motor_id].kd);
@@ -129,6 +135,8 @@ void loop()
       Serial.println(motors[motor_id].kd);
     }
   check_cmds();
+  calc_odom();
+  pub_odometry.publish(&odom);
   motorA.Compute();
   motorB.Compute();
   analogWrite(PWMA, motors[0].output);
@@ -154,7 +162,6 @@ int8_t get_serial_parameters(uint8_t* id, uint8_t* mode, double* speed, double* 
   static bool timer_flag = 0;
   if (!timer_flag && Serial1.available()) 
     {
-      Serial.println("Setting timeout flag");
       memset(serial_buf, 0, sizeof(serial_buf));
       timeout_time = millis() + 1000;
       timer_flag = 1;
@@ -163,7 +170,6 @@ int8_t get_serial_parameters(uint8_t* id, uint8_t* mode, double* speed, double* 
 
   if(millis() < timeout_time && Serial1.available())
     {
-      Serial.println("Reading data");
       while(Serial1.available() && k < sizeof(serial_buf))
         {
           serial_buf[k] = Serial1.read();
@@ -181,7 +187,6 @@ int8_t get_serial_parameters(uint8_t* id, uint8_t* mode, double* speed, double* 
       char *p1 = serial_buf, *p2;
       for(int j=0; j<6; j++)
         {
-          Serial1.print("Top print: ");
           Serial1.println(j);
           p2 = strchr(p1, ';');
           if(p2 == NULL)break;
@@ -202,7 +207,6 @@ int8_t get_serial_parameters(uint8_t* id, uint8_t* mode, double* speed, double* 
             {
               continue;
             }
-          Serial1.print("Bottom print: ");
           Serial1.println(j);
           if(j==0) sscanf(param_buffer, "%u", id);
           else if(j==1) sscanf(param_buffer, "%u", mode);
@@ -223,21 +227,33 @@ void vel_callback(const geometry_msgs::Twist& cmd_msg)
   new_speed.ang_vel = cmd_msg.angular.x;
   new_speed.cmd_time = millis();
   vel_cmd_flag = 1;
+  timeout_flag = 0;
 }
 
-void check_cmds() // TODO change flags var to array and use memcmp with prev state; Abstract cmd exec into separate functions
+void check_cmds() // TODO change flags var to array and use memcmp with prev state; Abstract cmd exec into separate functions; Use less globals;
 {
+  if(!timeout_flag && millis() > new_speed.cmd_time + CMD_TIMEOUT)
+    {
+      motors[0].target = 0;
+      motors[1].target = 0;
+      Serial1.println("Command timer timed out... Shutting down motors.");
+      timeout_flag = 1;
+      return;
+    }
   if(vel_cmd_flag)
     {
-      if(millis() > new_speed.cmd_time + CMD_TIMEOUT)
-        {
-          motors[0].speed = (new_speed.lin_vel - LR_WHEELS_DISTANCE*new_speed.ang_vel)/(2*PI);
-          motors[1].speed = (new_speed.lin_vel + LR_WHEELS_DISTANCE*new_speed.ang_vel)/(2*PI);
-        }
-      else
-        {
-          motors[0].speed = 0;
-          motors[1].speed = 0;
-        }
+      motors[0].target = (new_speed.lin_vel - LR_WHEELS_DISTANCE*new_speed.ang_vel)/((WHEEL_DIAMETER/2)*(2*PI));
+      motors[1].target = (new_speed.lin_vel + LR_WHEELS_DISTANCE*new_speed.ang_vel)/((WHEEL_DIAMETER/2)*(2*PI));
+      Serial1.print("Setting motor speed 1 to: ");
+      Serial1.println(motors[0].target);
+      Serial1.print("Setting motor speed 2 to: ");
+      Serial1.println(motors[1].target);
+      vel_cmd_flag = 0;
     }
+}
+
+void calc_odom() // TODO find the actual model to send; Abstract and refactor.
+{
+  odom.twist.twist.linear.x = (WHEEL_DIAMETER/2)*(motors[0].speed+motors[1].speed)*(2*PI)/2;
+  odom.twist.twist.angular.x = (WHEEL_DIAMETER/2)*(motors[0].speed-motors[1].speed)*(2*PI)/(2*LR_WHEELS_DISTANCE);
 }
