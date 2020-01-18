@@ -11,6 +11,10 @@
 
 #define PWMA 3
 #define PWMB 2
+#define DIR1_A
+#define DIR2_A
+#define DIR1_B
+#define DIR2_B
 #define MIN_PWM 0
 #define CHAN_3 15
 #define PID_SAMPLE_TIME 5
@@ -37,6 +41,7 @@ struct Motor /* Structs that encapsultes motor control */
   uint32_t last_millis = 0; // TODO Proctect against rollover
   uint8_t pwm_pin;
   bool dir;
+  uint8_t dir_pins[2];
 }motors[2], temp_motor;
 
 struct SpeedCmd
@@ -45,6 +50,8 @@ struct SpeedCmd
   float ang_vel = 0;
   unsigned long cmd_time = 0;
 }new_speed, last_speed;
+
+enum direction{FORWARD, BACKWARD, BRAKE, BRAKE2};
 
 bool vel_cmd_flag = 0;
 bool timeout_flag = 0;
@@ -66,6 +73,8 @@ int8_t get_serial_parameters(uint8_t*, uint8_t*, double*, double*, double*, doub
 void vel_callback(const geometry_msgs::Twist& cmd_msg);
 void check_cmds();
 void calc_odom();
+void write_motor(Motor);
+void set_dir(Motor, direction);
 
 ros::Subscriber<geometry_msgs::Twist> cmd_sub("cmd_vel", vel_callback);
 
@@ -73,6 +82,8 @@ ros::Publisher pub_odometry("odom", &odom);
 
 void setup() 
 {
+  analogWriteFrequency(PWMA, 400);
+  analogWriteFrequency(PWMB, 400);
   motors[0].pwm_pin = PWMA;
   motors[1].pwm_pin = PWMB;
   Serial1.begin(9600);
@@ -139,8 +150,11 @@ void loop()
   pub_odometry.publish(&odom);
   motorA.Compute();
   motorB.Compute();
-  analogWrite(PWMA, motors[0].output);
-  analogWrite(PWMB, motors[1].output);
+  write_motor(motors[0]);
+  write_motor(motors[1]);
+  // if(motors[0].output >= 0) analogWrite(PWMA, motors[0].output);
+  // else analogWrite(PWMA, -motors[0].output);
+  // analogWrite(PWMB, motors[1].output);
   nh.spinOnce();
 }
 
@@ -256,4 +270,42 @@ void calc_odom() // TODO find the actual model to send; Abstract and refactor.
 {
   odom.twist.twist.linear.x = (WHEEL_DIAMETER/2)*(motors[0].speed+motors[1].speed)*(2*PI)/2;
   odom.twist.twist.angular.x = (WHEEL_DIAMETER/2)*(motors[0].speed-motors[1].speed)*(2*PI)/(2*LR_WHEELS_DISTANCE);
+}
+
+void write_motor(Motor motor)
+{
+  if(motor.output >= 0) 
+    {
+      set_dir(motor, FORWARD);
+      analogWrite(motor.pwm_pin, motor.output);
+    }
+  else 
+    {
+      set_dir(motor, BACKWARD);
+      analogWrite(motor.pwm_pin, -motor.output);
+    }
+}
+
+void set_dir(Motor motor, direction dir)
+{
+  switch (dir)
+    {
+      case FORWARD:
+        digitalWrite(motor.dir_pins[0], HIGH);
+        digitalWrite(motor.dir_pins[1], LOW);
+        break;
+      case BACKWARD:
+        digitalWrite(motor.dir_pins[0], LOW);
+        digitalWrite(motor.dir_pins[1], HIGH);
+        break;
+      case BRAKE:
+        digitalWrite(motor.dir_pins[0], LOW);
+        digitalWrite(motor.dir_pins[1], LOW);
+        break;
+      case BRAKE2:
+        digitalWrite(motor.dir_pins[0], HIGH);
+        digitalWrite(motor.dir_pins[1], HIGH);
+        break;
+    }
+
 }
