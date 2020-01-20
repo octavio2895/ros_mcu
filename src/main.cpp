@@ -11,11 +11,11 @@
 
 #define PWMA 3
 #define PWMB 2
-#define DIR1_A
-#define DIR2_A
-#define DIR1_B
-#define DIR2_B
-#define MIN_PWM 0
+#define DIR1_A 9
+#define DIR2_A 10
+#define DIR1_B 11
+#define DIR2_B 12
+#define MIN_PWM -255
 #define CHAN_3 15
 #define PID_SAMPLE_TIME 5
 #define CPR_CONS 1100 
@@ -32,8 +32,8 @@
 struct Motor /* Structs that encapsultes motor control */
 {
   double kp = 100;
-  double ki = 120;
-  double kd = 15;
+  double ki = 1500;
+  double kd = 0.2;
   double target = 0;
   double speed = 0;
   double output = 0;
@@ -56,7 +56,7 @@ enum direction{FORWARD, BACKWARD, BRAKE, BRAKE2};
 bool vel_cmd_flag = 0;
 bool timeout_flag = 0;
 uint8_t mode=0;
-nav_msgs::Odometry odom;
+// nav_msgs::Odometry odom;
 
 // Objects
 PID motorA(&motors[0].speed, &motors[0].output, &motors[0].target, motors[0].kp, motors[0].ki, motors[0].kd, DIRECT);
@@ -71,14 +71,16 @@ Encoder encoderB(7, 8);
 void calculate_speed(long, Motor*);
 int8_t get_serial_parameters(uint8_t*, uint8_t*, double*, double*, double*, double*);
 void vel_callback(const geometry_msgs::Twist& cmd_msg);
+void pid_update_callback(const geometry_msgs::Vector3& cmd_msg);
 void check_cmds();
-void calc_odom();
-void write_motor(Motor);
-void set_dir(Motor, direction);
+// void calc_odom();
+void write_motor(Motor m1);
+void set_dir(Motor m2, direction dir);
 
 ros::Subscriber<geometry_msgs::Twist> cmd_sub("cmd_vel", vel_callback);
+ros::Subscriber<geometry_msgs::Vector3> pid_sub("pid_vals", pid_update_callback);
 
-ros::Publisher pub_odometry("odom", &odom);
+// ros::Publisher pub_odometry("odom", &odom);
 
 void setup() 
 {
@@ -86,6 +88,10 @@ void setup()
   analogWriteFrequency(PWMB, 400);
   motors[0].pwm_pin = PWMA;
   motors[1].pwm_pin = PWMB;
+  motors[0].dir_pins[0] = DIR1_A;
+  motors[0].dir_pins[1] = DIR2_A;
+  motors[1].dir_pins[0] = DIR1_B;
+  motors[1].dir_pins[1] = DIR2_B;
   Serial1.begin(9600);
   motorA.SetSampleTime(PID_SAMPLE_TIME);
   motorB.SetSampleTime(PID_SAMPLE_TIME); // TODO Find optimal sampling time.
@@ -94,19 +100,24 @@ void setup()
   pinMode(CHAN_3, INPUT);
   pinMode(5, INPUT_PULLUP);
   pinMode(6, INPUT_PULLUP);
+  pinMode(9, OUTPUT);
+  pinMode(10, OUTPUT);
+  pinMode(11, OUTPUT);
+  pinMode(12, OUTPUT);
   motorA.SetMode(AUTOMATIC);
-  motorA.SetOutputLimits(MIN_PWM, 255); // TODO Find optimal MIN_PWM.
+  motorA.SetOutputLimits(MIN_PWM, 255);
   motorB.SetMode(AUTOMATIC);
   motorB.SetOutputLimits(MIN_PWM, 255);
   nh.initNode();
   nh.subscribe(cmd_sub);
-  nh.advertise(pub_odometry);
+  nh.subscribe(pid_sub);
+  // nh.advertise(pub_odometry);
 }
 
 void loop() 
 {
   static uint32_t last_update=0;
-  if(millis()-last_update > 10) // TODO make this a timer.
+  if(millis()-last_update > 1) // TODO make this a timer.
     {
       if(mode)
         {
@@ -115,47 +126,47 @@ void loop()
         }
       Serial1.print(motors[0].speed);
       Serial1.print(",");
+      Serial1.print(motors[0].target);
+      Serial1.print(",");
       Serial1.print(motors[0].output);
       Serial1.print(",");
       Serial1.print(motors[1].speed);
       Serial1.print(",");
+      Serial1.print(motors[1].target);
+      Serial1.print(",");
       Serial1.println(motors[1].output);
-      calculate_speed(encoderA.read(), &motors[0]);
+      calculate_speed(encoderA.read(), &motors[0]); // TODO Protect against rollover
       calculate_speed(encoderB.read(), &motors[1]);
       last_update = millis();
     }
-  double static temp_speed = 0;
-  double temp_p, temp_i, temp_d;
-  uint8_t new_mode, motor_id = 0;
-  temp_p=motors[motor_id].kp, temp_i=motors[motor_id].ki, temp_d=motors[motor_id].kd, new_mode = mode;
-  if(get_serial_parameters(&motor_id, &new_mode, &temp_speed, &temp_p, &temp_i, &temp_d)) // TODO rewrite this, values are not updating correctly.
-    {
-      char sendbuffer[100];
-      sprintf(sendbuffer, "Previous values for motor %u: Mode = %d; Target Speed = %lf; KP = %lf; KI = %lf; KD = %lf", motor_id, mode, motors[motor_id].target, motors[motor_id].kp, motors[motor_id].ki, motors[motor_id].kd);
-      Serial1.println(sendbuffer);
-      sprintf(sendbuffer, "Current values for motor %u: Mode = %d; Target Speed = %lf; KP = %lf; KI = %lf; KD = %lf", motor_id, new_mode, temp_speed, temp_p, temp_i, temp_d);
-      Serial1.println(sendbuffer);
-      mode = new_mode;
-      if(mode==0) motors[motor_id].target = temp_speed;
-      if(motors[motor_id].kp != temp_p || motors[motor_id].ki != temp_i || motors[motor_id].kd != temp_d) motorA.SetTunings(motors[0].kp, motors[0].ki, motors[0].kd);
-      Serial1.print("KP: ");
-      Serial1.println(motors[motor_id].kp);
-      Serial1.print("KI: ");
-      Serial1.println(motors[motor_id].ki);
-      Serial1.print("KD: ");
-      Serial.println(motors[motor_id].kd);
-    }
+  // double static temp_speed = 0;
+  // double temp_p, temp_i, temp_d;
+  // uint8_t new_mode, motor_id = 0;
+  // temp_p=motors[motor_id].kp, temp_i=motors[motor_id].ki, temp_d=motors[motor_id].kd, new_mode = mode;
+  // if(get_serial_parameters(&motor_id, &new_mode, &temp_speed, &temp_p, &temp_i, &temp_d)) // TODO rewrite this, values are not updating correctly.
+  //   {
+  //     char sendbuffer[100];
+  //     sprintf(sendbuffer, "Previous values for motor %u: Mode = %d; Target Speed = %lf; KP = %lf; KI = %lf; KD = %lf", motor_id, mode, motors[motor_id].target, motors[motor_id].kp, motors[motor_id].ki, motors[motor_id].kd);
+  //     Serial1.println(sendbuffer);
+  //     sprintf(sendbuffer, "Current values for motor %u: Mode = %d; Target Speed = %lf; KP = %lf; KI = %lf; KD = %lf", motor_id, new_mode, temp_speed, temp_p, temp_i, temp_d);
+  //     Serial1.println(sendbuffer);
+  //     mode = new_mode;
+  //     if(mode==0) motors[motor_id].target = temp_speed;
+  //     if(motors[motor_id].kp != temp_p || motors[motor_id].ki != temp_i || motors[motor_id].kd != temp_d) motorA.SetTunings(motors[0].kp, motors[0].ki, motors[0].kd);
+  //     Serial1.print("KP: ");
+  //     Serial1.println(motors[motor_id].kp);
+  //     Serial1.print("KI: ");
+  //     Serial1.println(motors[motor_id].ki);
+  //     Serial1.print("KD: ");
+  //     Serial.println(motors[motor_id].kd);
+  //   }
   check_cmds();
-  calc_odom();
-  pub_odometry.publish(&odom);
+  // calc_odom();
+  // pub_odometry.publish(&odom);
   motorA.Compute();
   motorB.Compute();
   write_motor(motors[0]);
   write_motor(motors[1]);
-  // if(motors[0].output >= 0) analogWrite(PWMA, motors[0].output);
-  // else analogWrite(PWMA, -motors[0].output);
-  // analogWrite(PWMB, motors[1].output);
-  nh.spinOnce();
 }
 
 
@@ -266,46 +277,58 @@ void check_cmds() // TODO change flags var to array and use memcmp with prev sta
     }
 }
 
-void calc_odom() // TODO find the actual model to send; Abstract and refactor.
-{
-  odom.twist.twist.linear.x = (WHEEL_DIAMETER/2)*(motors[0].speed+motors[1].speed)*(2*PI)/2;
-  odom.twist.twist.angular.x = (WHEEL_DIAMETER/2)*(motors[0].speed-motors[1].speed)*(2*PI)/(2*LR_WHEELS_DISTANCE);
-}
+// void calc_odom() // TODO find the actual model to send; Abstract and refactor.
+// {
+//   odom.twist.twist.linear.x = (WHEEL_DIAMETER/2)*(motors[0].speed+motors[1].speed)*(2*PI)/2;
+//   odom.twist.twist.angular.x = (WHEEL_DIAMETER/2)*(motors[0].speed-motors[1].speed)*(2*PI)/(2*LR_WHEELS_DISTANCE);
+// }
 
-void write_motor(Motor motor)
+void write_motor(Motor mwrite)
 {
-  if(motor.output >= 0) 
+  if(mwrite.output >= 0) 
     {
-      set_dir(motor, FORWARD);
-      analogWrite(motor.pwm_pin, motor.output);
+      set_dir(mwrite, FORWARD);
+      analogWrite(mwrite.pwm_pin, mwrite.output);
     }
   else 
     {
-      set_dir(motor, BACKWARD);
-      analogWrite(motor.pwm_pin, -motor.output);
+      set_dir(mwrite, BACKWARD);     
+      analogWrite(mwrite.pwm_pin, -mwrite.output);
     }
 }
 
-void set_dir(Motor motor, direction dir)
+void set_dir(Motor mdir, direction dir)
 {
   switch (dir)
     {
       case FORWARD:
-        digitalWrite(motor.dir_pins[0], HIGH);
-        digitalWrite(motor.dir_pins[1], LOW);
+        digitalWrite(mdir.dir_pins[0], HIGH);
+        digitalWrite(mdir.dir_pins[1], LOW);
         break;
       case BACKWARD:
-        digitalWrite(motor.dir_pins[0], LOW);
-        digitalWrite(motor.dir_pins[1], HIGH);
+        digitalWrite(mdir.dir_pins[0], LOW);
+        digitalWrite(mdir.dir_pins[1], HIGH);
         break;
       case BRAKE:
-        digitalWrite(motor.dir_pins[0], LOW);
-        digitalWrite(motor.dir_pins[1], LOW);
+        digitalWrite(mdir.dir_pins[0], LOW);
+        digitalWrite(mdir.dir_pins[1], LOW);
         break;
       case BRAKE2:
-        digitalWrite(motor.dir_pins[0], HIGH);
-        digitalWrite(motor.dir_pins[1], HIGH);
+        digitalWrite(mdir.dir_pins[0], HIGH);
+        digitalWrite(mdir.dir_pins[1], HIGH);
         break;
     }
 
+}
+
+void pid_update_callback(const geometry_msgs::Vector3& pid_vals) // TODO Change to custom msg. Update motors parameters independently.
+{
+  motorA.SetTunings((double)pid_vals.x, (double)pid_vals.y, (double)pid_vals.z);
+  motorB.SetTunings((double)pid_vals.x, (double)pid_vals.y, (double)pid_vals.z);
+  Serial1.print("PID Vals - P: ");
+  Serial1.print(motorA.GetKp());
+  Serial1.print(" I: ");
+  Serial1.print(motorA.GetKi());
+  Serial1.print(" D: ");
+  Serial1.println(motorA.GetKd());
 }
