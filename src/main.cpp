@@ -17,6 +17,7 @@
 #define DIR2_B 12
 #define MIN_PWM -255
 #define CHAN_3 15
+#define CHAN_4 16
 #define PID_SAMPLE_TIME 5
 #define CPR_CONS 1100 
 #define MAX_RPM 2
@@ -33,7 +34,7 @@
 struct Motor /* Structs that encapsultes motor control */
 {
   double kp = 100;
-  double ki = 1500;
+  double ki = 7500;
   double kd = 0.2;
   double target = 0;
   double speed = 0;
@@ -60,6 +61,8 @@ uint8_t mode=0;
 
 volatile int32_t chan3_pwm_len = 0;
 volatile uint32_t chan3_rising_micros = 0;
+volatile int32_t chan4_pwm_len = 0;
+volatile uint32_t chan4_rising_micros = 0;
 
 // nav_msgs::Odometry odom;
 
@@ -82,6 +85,9 @@ void check_cmds();
 void write_motor(Motor m1);
 void set_dir(Motor m2, direction dir);
 void chan3_isr(void);
+void chan4_isr(void);
+void cmd_to_revs_diff(const SpeedCmd*, Motor*, Motor*);
+double compute_input(uint32_t);
 
 ros::Subscriber<geometry_msgs::Twist> cmd_sub("cmd_vel", vel_callback);
 ros::Subscriber<geometry_msgs::Vector3> pid_sub("pid_vals", pid_update_callback);
@@ -90,7 +96,8 @@ ros::Subscriber<geometry_msgs::Vector3> pid_sub("pid_vals", pid_update_callback)
 
 void setup() 
 {
-  attachInterrupt(digitalPinToInterrupt(CHAN_3), chan3_isr, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(CHAN_3), chan3_isr, CHANGE); // TODO Only attach when in recovery mode;
+  attachInterrupt(digitalPinToInterrupt(CHAN_4), chan4_isr, CHANGE);
   analogWriteFrequency(PWMA, 400);
   analogWriteFrequency(PWMB, 400);
   motors[0].pwm_pin = PWMA;
@@ -128,8 +135,9 @@ void loop()
     {
       if(mode)
         {
-          Serial1.printf("PWM width: %d, Target speed: ", chan3_pwm_len);
-          motors[0].target = (((double)chan3_pwm_len - 1000)*MAX_RPM)/1000; // TODO Make deadzone; Make dz automatically adjustable; 
+          Serial1.printf("Chan3 length: %d, Chan4 length: %d \r\n", chan3_pwm_len, chan4_pwm_len);
+          SpeedCmd s = {compute_input(chan3_pwm_len), compute_input(chan4_pwm_len)}; // TODO Make deadzone; Make dz automatically adjustable; 
+          cmd_to_revs_diff(&s, &motors[0], &motors[1]);
           Serial1.println(motors[0].target);
         }
       Serial1.print(motors[0].speed);
@@ -277,8 +285,9 @@ void check_cmds() // TODO change flags var to array and use memcmp with prev sta
     }
   if(vel_cmd_flag)
     {
-      motors[0].target = (new_speed.lin_vel - LR_WHEELS_DISTANCE*new_speed.ang_vel)/((WHEEL_DIAMETER/2)*(2*PI));
-      motors[1].target = (new_speed.lin_vel + LR_WHEELS_DISTANCE*new_speed.ang_vel)/((WHEEL_DIAMETER/2)*(2*PI));
+      cmd_to_revs_diff(&new_speed, &motors[0], &motors[1]);
+      // motors[0].target = (new_speed.lin_vel - LR_WHEELS_DISTANCE*new_speed.ang_vel)/((WHEEL_DIAMETER/2)*(2*PI)); // TODO abstract into function;
+      // motors[1].target = (new_speed.lin_vel + LR_WHEELS_DISTANCE*new_speed.ang_vel)/((WHEEL_DIAMETER/2)*(2*PI));
       Serial1.print("Setting motor speed 1 to: ");
       Serial1.println(motors[0].target);
       Serial1.print("Setting motor speed 2 to: ");
@@ -356,4 +365,31 @@ void chan3_isr() // TODO Make it more reusable; Change to better name;
       if(chan3_pwm_len <= 0) chan3_pwm_len =  chan3_pwm_len + micros(); // Protect from rollover
       if(chan3_pwm_len > 2000) chan3_pwm_len = 0; // Recover from disconnection
     }
+}
+
+void chan4_isr() // TODO Make it more reusable; Change to better name;
+{
+  if(digitalRead(CHAN_4))
+    {
+      chan4_rising_micros = micros();
+    }
+  else
+    {
+      chan4_pwm_len = micros() - chan4_rising_micros;
+      if(chan4_pwm_len <= 0) chan4_pwm_len =  chan4_pwm_len + micros(); // Protect from rollover
+      if(chan4_pwm_len > 2000) chan4_pwm_len = 0; // Recover from disconnection
+    }
+}
+
+void cmd_to_revs_diff(const SpeedCmd* sp, Motor* ma, Motor* mb) // Transform linear and angular velocities into rev/s for differential drive.
+// TODO Accept robot parameters as struct
+{
+  ma->target = (sp->lin_vel - LR_WHEELS_DISTANCE*sp->ang_vel)/((WHEEL_DIAMETER/2)*(2*PI));
+  mb->target = (sp->lin_vel + LR_WHEELS_DISTANCE*sp->ang_vel)/((WHEEL_DIAMETER/2)*(2*PI));
+}
+
+double compute_input(uint32_t len)
+{
+  if (len <= 1110) len = 1000;
+  return (((double)len - 1000)*MAX_RPM)/1000;
 }
