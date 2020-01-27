@@ -1,5 +1,5 @@
 #include <Arduino.h>
-#include <Encoder.h>
+#include <Encoder.h> // TODO Use teensy's built-in quad decoder
 #include <PID_v1.h>
 
 // ROS Message Types
@@ -19,7 +19,8 @@
 #define CHAN_3 15
 #define PID_SAMPLE_TIME 5
 #define CPR_CONS 1100 
-#define MAX_RPM 7
+#define MAX_RPM 2
+#define MAX_SPEED 1
 #define WHEEL_DIAMETER 0.1
 #define FR_WHEELS_DISTANCE 0.30
 #define LR_WHEELS_DISTANCE 0.235
@@ -56,6 +57,10 @@ enum direction{FORWARD, BACKWARD, BRAKE, BRAKE2};
 bool vel_cmd_flag = 0;
 bool timeout_flag = 0;
 uint8_t mode=0;
+
+volatile int32_t chan3_pwm_len = 0;
+volatile uint32_t chan3_rising_micros = 0;
+
 // nav_msgs::Odometry odom;
 
 // Objects
@@ -76,6 +81,7 @@ void check_cmds();
 // void calc_odom();
 void write_motor(Motor m1);
 void set_dir(Motor m2, direction dir);
+void chan3_isr(void);
 
 ros::Subscriber<geometry_msgs::Twist> cmd_sub("cmd_vel", vel_callback);
 ros::Subscriber<geometry_msgs::Vector3> pid_sub("pid_vals", pid_update_callback);
@@ -84,6 +90,7 @@ ros::Subscriber<geometry_msgs::Vector3> pid_sub("pid_vals", pid_update_callback)
 
 void setup() 
 {
+  attachInterrupt(digitalPinToInterrupt(CHAN_3), chan3_isr, CHANGE);
   analogWriteFrequency(PWMA, 400);
   analogWriteFrequency(PWMB, 400);
   motors[0].pwm_pin = PWMA;
@@ -121,7 +128,8 @@ void loop()
     {
       if(mode)
         {
-          motors[0].target = ((double)pulseIn(CHAN_3, HIGH, 21000))/250; // FIXME pulseIn is breaking and takes too long.
+          Serial1.printf("PWM width: %d, Target speed: ", chan3_pwm_len);
+          motors[0].target = (((double)chan3_pwm_len - 1000)*MAX_RPM)/1000; // TODO Make deadzone; Make dz automatically adjustable; 
           Serial1.println(motors[0].target);
         }
       Serial1.print(motors[0].speed);
@@ -167,6 +175,7 @@ void loop()
   motorB.Compute();
   write_motor(motors[0]);
   write_motor(motors[1]);
+  nh.spinOnce();
 }
 
 
@@ -263,6 +272,7 @@ void check_cmds() // TODO change flags var to array and use memcmp with prev sta
       motors[1].target = 0;
       Serial1.println("Command timer timed out... Shutting down motors.");
       timeout_flag = 1;
+      mode = 1;
       return;
     }
   if(vel_cmd_flag)
@@ -273,6 +283,7 @@ void check_cmds() // TODO change flags var to array and use memcmp with prev sta
       Serial1.println(motors[0].target);
       Serial1.print("Setting motor speed 2 to: ");
       Serial1.println(motors[1].target);
+      mode = 0;
       vel_cmd_flag = 0;
     }
 }
@@ -331,4 +342,18 @@ void pid_update_callback(const geometry_msgs::Vector3& pid_vals) // TODO Change 
   Serial1.print(motorA.GetKi());
   Serial1.print(" D: ");
   Serial1.println(motorA.GetKd());
+}
+
+void chan3_isr() // TODO Make it more reusable; Change to better name;
+{
+  if(digitalRead(CHAN_3))
+    {
+      chan3_rising_micros = micros();
+    }
+  else
+    {
+      chan3_pwm_len = micros() - chan3_rising_micros;
+      if(chan3_pwm_len <= 0) chan3_pwm_len =  chan3_pwm_len + micros(); // Protect from rollover
+      if(chan3_pwm_len > 2000) chan3_pwm_len = 0; // Recover from disconnection
+    }
 }
