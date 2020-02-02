@@ -87,7 +87,7 @@ void set_dir(Motor m2, direction dir);
 void chan3_isr(void);
 void chan4_isr(void);
 void cmd_to_revs_diff(const SpeedCmd*, Motor*, Motor*);
-double compute_input(uint32_t);
+double compute_input(uint32_t, bool);
 
 ros::Subscriber<geometry_msgs::Twist> cmd_sub("cmd_vel", vel_callback);
 ros::Subscriber<geometry_msgs::Vector3> pid_sub("pid_vals", pid_update_callback);
@@ -133,10 +133,11 @@ void loop()
   static uint32_t last_update=0;
   if(millis()-last_update > 1) // TODO make this a timer.
     {
-      if(mode)
+      Serial1.printf("Time diff: %d \r\n", micros()-chan4_rising_micros);
+      if(mode /* && micros()-chan4_rising_micros < 2000*/)
         {
           Serial1.printf("Chan3 length: %d, Chan4 length: %d \r\n", chan3_pwm_len, chan4_pwm_len);
-          SpeedCmd s = {compute_input(chan3_pwm_len), compute_input(chan4_pwm_len)}; // TODO Make deadzone; Make dz automatically adjustable; 
+          SpeedCmd s = {compute_input(chan3_pwm_len, 1), compute_input(chan4_pwm_len, 0)}; // TODO Make deadzone; Make dz automatically adjustable; 
           cmd_to_revs_diff(&s, &motors[0], &motors[1]);
           Serial1.println(motors[0].target);
         }
@@ -388,8 +389,17 @@ void cmd_to_revs_diff(const SpeedCmd* sp, Motor* ma, Motor* mb) // Transform lin
   mb->target = (sp->lin_vel + LR_WHEELS_DISTANCE*sp->ang_vel)/((WHEEL_DIAMETER/2)*(2*PI));
 }
 
-double compute_input(uint32_t len)
+double compute_input(uint32_t len, bool mode)
 {
-  if (len <= 1110) len = 1000;
-  return (((double)len - 1000)*MAX_RPM)/1000;
+  if(mode)
+    {
+      if (len <= 1110) len = 1000;
+      return (((double)len - 1000)*MAX_RPM)/1000;
+    }
+
+  else
+    {
+      if (len <= 1110) len = 1000;
+      return (((double)len - 1500)*MAX_RPM)/1000;
+    }
 }
