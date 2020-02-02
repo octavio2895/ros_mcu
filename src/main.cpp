@@ -282,8 +282,8 @@ int8_t get_serial_parameters(uint8_t* id, uint8_t* mode, double* speed, double* 
 void vel_callback(const geometry_msgs::Twist& cmd_msg) // Processes Twist cmd from ROS.
 {
   last_speed = new_speed;
-  new_speed.lin_vel = cmd_msg.linear.x;
-  new_speed.ang_vel = cmd_msg.angular.x;
+  new_speed.lin_vel = cmd_msg.linear.y;
+  new_speed.ang_vel = cmd_msg.angular.z;
   new_speed.cmd_time = millis();
   vel_cmd_flag = 1;
   timeout_flag = 0;
@@ -428,17 +428,17 @@ void compute_pose(int32_t a, int32_t b) // Appoximates odometry from deadreckoni
   pose.y = pose.y + s*sin(pose.theta);
 }
 
-void compute_twist(SpeedCmd* s, int32_t m1_speed, int32_t m2_speed)
+void compute_twist(SpeedCmd* s, int32_t m1_speed, int32_t m2_speed) // Appoximates the current speed of robot.
 {
   s->lin_vel = ((double)(m1_speed+m2_speed)*WHEEL_DIAMETER)*PI;
   s->ang_vel = ((double)(m1_speed-m2_speed)*WHEEL_DIAMETER*PI)/(FR_WHEELS_DISTANCE);
   s->cmd_time = 0;
 }
 
-void compute_odom(nav_msgs::Odometry* odom, Pose p, SpeedCmd s)
+void compute_odom(nav_msgs::Odometry* odom, Pose p, SpeedCmd s) // Combines current pose and speed into odom to send to ROS
 {
-  odom->twist.twist.linear.x = (double)s.lin_vel;
-  odom->twist.twist.angular.x = (double)s.ang_vel;
+  odom->twist.twist.linear.y = (double)s.lin_vel;
+  odom->twist.twist.angular.z = (double)s.ang_vel;
   odom->pose.pose.position.x = p.x;
   odom->pose.pose.position.y = p.y;
   odom->pose.pose.position.z = 0;
