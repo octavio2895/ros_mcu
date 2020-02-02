@@ -304,8 +304,6 @@ void check_cmds() // Polls cmds flags.
   if(vel_cmd_flag)
     {
       cmd_to_revs_diff(&new_speed, &motors[0], &motors[1]);
-      // motors[0].target = (new_speed.lin_vel - LR_WHEELS_DISTANCE*new_speed.ang_vel)/((WHEEL_DIAMETER/2)*(2*PI)); // TODO abstract into function;
-      // motors[1].target = (new_speed.lin_vel + LR_WHEELS_DISTANCE*new_speed.ang_vel)/((WHEEL_DIAMETER/2)*(2*PI));
       Serial1.print("Setting motor speed 1 to: ");
       Serial1.println(motors[0].target);
       Serial1.print("Setting motor speed 2 to: ");
