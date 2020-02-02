@@ -51,7 +51,14 @@ struct SpeedCmd
   float lin_vel = 0;
   float ang_vel = 0;
   unsigned long cmd_time = 0;
-}new_speed, last_speed;
+}new_speed, last_speed, actual_speed;
+
+struct Pose
+{
+  double x = 0;
+  double y = 0;
+  double theta = 0;
+}pose;
 
 enum direction{FORWARD, BACKWARD, BRAKE, BRAKE2};
 
@@ -64,7 +71,7 @@ volatile uint32_t chan3_rising_micros = 0;
 volatile int32_t chan4_pwm_len = 0;
 volatile uint32_t chan4_rising_micros = 0;
 
-// nav_msgs::Odometry odom;
+nav_msgs::Odometry odom;
 
 // Objects
 PID motorA(&motors[0].speed, &motors[0].output, &motors[0].target, motors[0].kp, motors[0].ki, motors[0].kd, DIRECT);
@@ -81,18 +88,20 @@ int8_t get_serial_parameters(uint8_t*, uint8_t*, double*, double*, double*, doub
 void vel_callback(const geometry_msgs::Twist& cmd_msg);
 void pid_update_callback(const geometry_msgs::Vector3& cmd_msg);
 void check_cmds();
-// void calc_odom();
 void write_motor(Motor m1);
 void set_dir(Motor m2, direction dir);
 void chan3_isr(void);
 void chan4_isr(void);
 void cmd_to_revs_diff(const SpeedCmd*, Motor*, Motor*);
 double compute_input(uint32_t, bool);
+void compute_pose(int32_t, int32_t);
+void compute_twist(SpeedCmd*, double, double);
+void compute_odom(nav_msgs::Odometry*, Pose, SpeedCmd);
 
 ros::Subscriber<geometry_msgs::Twist> cmd_sub("cmd_vel", vel_callback);
 ros::Subscriber<geometry_msgs::Vector3> pid_sub("pid_vals", pid_update_callback);
 
-// ros::Publisher pub_odometry("odom", &odom);
+ros::Publisher pub_odometry("odom", &odom);
 
 void setup() 
 {
@@ -125,7 +134,7 @@ void setup()
   nh.initNode();
   nh.subscribe(cmd_sub);
   nh.subscribe(pid_sub);
-  // nh.advertise(pub_odometry);
+  nh.advertise(pub_odometry);
 }
 
 void loop() 
@@ -134,7 +143,7 @@ void loop()
   if(millis()-last_update > 1) // TODO make this a timer.
     {
       Serial1.printf("Time diff: %d \r\n", micros()-chan4_rising_micros);
-      if(mode /* && micros()-chan4_rising_micros < 2000*/)
+      if(mode /* && micros()-chan4_rising_micros < 2000*/) // FIXME When RC is disonnected, motors spin up.
         {
           Serial1.printf("Chan3 length: %d, Chan4 length: %d \r\n", chan3_pwm_len, chan4_pwm_len);
           SpeedCmd s = {compute_input(chan3_pwm_len, 1), compute_input(chan4_pwm_len, 0)}; // TODO Make deadzone; Make dz automatically adjustable; 
@@ -154,32 +163,37 @@ void loop()
       Serial1.println(motors[1].output);
       calculate_speed(encoderA.read(), &motors[0]); // TODO Protect against rollover
       calculate_speed(encoderB.read(), &motors[1]);
+      compute_pose(encoderA.read(), encoderB.read());
+      compute_twist(&actual_speed, motors[0].speed, motors[1].speed);
+      compute_odom(&odom, pose, actual_speed);
       last_update = millis();
     }
-  // double static temp_speed = 0;
-  // double temp_p, temp_i, temp_d;
-  // uint8_t new_mode, motor_id = 0;
-  // temp_p=motors[motor_id].kp, temp_i=motors[motor_id].ki, temp_d=motors[motor_id].kd, new_mode = mode;
-  // if(get_serial_parameters(&motor_id, &new_mode, &temp_speed, &temp_p, &temp_i, &temp_d)) // TODO rewrite this, values are not updating correctly.
-  //   {
-  //     char sendbuffer[100];
-  //     sprintf(sendbuffer, "Previous values for motor %u: Mode = %d; Target Speed = %lf; KP = %lf; KI = %lf; KD = %lf", motor_id, mode, motors[motor_id].target, motors[motor_id].kp, motors[motor_id].ki, motors[motor_id].kd);
-  //     Serial1.println(sendbuffer);
-  //     sprintf(sendbuffer, "Current values for motor %u: Mode = %d; Target Speed = %lf; KP = %lf; KI = %lf; KD = %lf", motor_id, new_mode, temp_speed, temp_p, temp_i, temp_d);
-  //     Serial1.println(sendbuffer);
-  //     mode = new_mode;
-  //     if(mode==0) motors[motor_id].target = temp_speed;
-  //     if(motors[motor_id].kp != temp_p || motors[motor_id].ki != temp_i || motors[motor_id].kd != temp_d) motorA.SetTunings(motors[0].kp, motors[0].ki, motors[0].kd);
-  //     Serial1.print("KP: ");
-  //     Serial1.println(motors[motor_id].kp);
-  //     Serial1.print("KI: ");
-  //     Serial1.println(motors[motor_id].ki);
-  //     Serial1.print("KD: ");
-  //     Serial.println(motors[motor_id].kd);
-  //   }
+  // TODO rewrite this, values are not updating correctly.
+  /*
+  double static temp_speed = 0;
+  double temp_p, temp_i, temp_d;
+  uint8_t new_mode, motor_id = 0;
+  temp_p=motors[motor_id].kp, temp_i=motors[motor_id].ki, temp_d=motors[motor_id].kd, new_mode = mode;
+  if(get_serial_parameters(&motor_id, &new_mode, &temp_speed, &temp_p, &temp_i, &temp_d))
+    {
+      char sendbuffer[100];
+      sprintf(sendbuffer, "Previous values for motor %u: Mode = %d; Target Speed = %lf; KP = %lf; KI = %lf; KD = %lf", motor_id, mode, motors[motor_id].target, motors[motor_id].kp, motors[motor_id].ki, motors[motor_id].kd);
+      Serial1.println(sendbuffer);
+      sprintf(sendbuffer, "Current values for motor %u: Mode = %d; Target Speed = %lf; KP = %lf; KI = %lf; KD = %lf", motor_id, new_mode, temp_speed, temp_p, temp_i, temp_d);
+      Serial1.println(sendbuffer);
+      mode = new_mode;
+      if(mode==0) motors[motor_id].target = temp_speed;
+      if(motors[motor_id].kp != temp_p || motors[motor_id].ki != temp_i || motors[motor_id].kd != temp_d) motorA.SetTunings(motors[0].kp, motors[0].ki, motors[0].kd);
+      Serial1.print("KP: ");
+      Serial1.println(motors[motor_id].kp);
+      Serial1.print("KI: ");
+      Serial1.println(motors[motor_id].ki);
+      Serial1.print("KD: ");
+      Serial.println(motors[motor_id].kd);
+    }
+  */
   check_cmds();
-  // calc_odom();
-  // pub_odometry.publish(&odom);
+  pub_odometry.publish(&odom);
   motorA.Compute();
   motorB.Compute();
   write_motor(motors[0]);
@@ -188,7 +202,8 @@ void loop()
 }
 
 
-void calculate_speed(long new_point, Motor *motor) // TODO change timing into mircoseconds, protect against rollover.
+void calculate_speed(long new_point, Motor *motor) // Calculates rev/s from encoders.
+// TODO change timing into mircoseconds; protect against rollover.
 {
   double time_elapsed;
   time_elapsed = ((double)(millis()-motor->last_millis))/1000;
@@ -197,9 +212,10 @@ void calculate_speed(long new_point, Motor *motor) // TODO change timing into mi
   motor->last_millis = millis();
 }
 
-int8_t get_serial_parameters(uint8_t* id, uint8_t* mode, double* speed, double* p, double* i, double* d) // TODO try strtol, protect against overflow.
+int8_t get_serial_parameters(uint8_t* id, uint8_t* mode, double* speed, double* p, double* i, double* d) // Grab paramaters and cmds from Serial.
+// TODO try strtol; protect against overflow; pass Streaming object.
 {
-  static char serial_buf[100]; // TODO must protect against overflow
+  static char serial_buf[100];
   static uint8_t k = 0;
   static unsigned int timeout_time = 0;
   static bool timer_flag = 0;
@@ -263,7 +279,7 @@ int8_t get_serial_parameters(uint8_t* id, uint8_t* mode, double* speed, double* 
   return 0;
 }
 
-void vel_callback(const geometry_msgs::Twist& cmd_msg)
+void vel_callback(const geometry_msgs::Twist& cmd_msg) // Processes Twist cmd from ROS.
 {
   last_speed = new_speed;
   new_speed.lin_vel = cmd_msg.linear.x;
@@ -273,7 +289,8 @@ void vel_callback(const geometry_msgs::Twist& cmd_msg)
   timeout_flag = 0;
 }
 
-void check_cmds() // TODO change flags var to array and use memcmp with prev state; Abstract cmd exec into separate functions; Use less globals;
+void check_cmds() // Polls cmds flags.
+// TODO change flags var to array and use memcmp with prev state; Abstract cmd exec into separate functions; Use less globals;
 {
   if(!timeout_flag && millis() > new_speed.cmd_time + CMD_TIMEOUT)
     {
@@ -297,12 +314,6 @@ void check_cmds() // TODO change flags var to array and use memcmp with prev sta
       vel_cmd_flag = 0;
     }
 }
-
-// void calc_odom() // TODO find the actual model to send; Abstract and refactor.
-// {
-//   odom.twist.twist.linear.x = (WHEEL_DIAMETER/2)*(motors[0].speed+motors[1].speed)*(2*PI)/2;
-//   odom.twist.twist.angular.x = (WHEEL_DIAMETER/2)*(motors[0].speed-motors[1].speed)*(2*PI)/(2*LR_WHEELS_DISTANCE);
-// }
 
 void write_motor(Motor mwrite)
 {
@@ -342,7 +353,8 @@ void set_dir(Motor mdir, direction dir)
 
 }
 
-void pid_update_callback(const geometry_msgs::Vector3& pid_vals) // TODO Change to custom msg. Update motors parameters independently.
+void pid_update_callback(const geometry_msgs::Vector3& pid_vals) // Update PID constants from ROS Vector3 msg
+// TODO Change to custom msg. Update motors parameters independently.
 {
   motorA.SetTunings((double)pid_vals.x, (double)pid_vals.y, (double)pid_vals.z);
   motorB.SetTunings((double)pid_vals.x, (double)pid_vals.y, (double)pid_vals.z);
@@ -389,7 +401,7 @@ void cmd_to_revs_diff(const SpeedCmd* sp, Motor* ma, Motor* mb) // Transform lin
   mb->target = (sp->lin_vel + LR_WHEELS_DISTANCE*sp->ang_vel)/((WHEEL_DIAMETER/2)*(2*PI));
 }
 
-double compute_input(uint32_t len, bool mode)
+double compute_input(uint32_t len, bool mode) // Calulates speed from RC pulse length. Mode 1: 0-max, Mode 0: -max - max;
 {
   if(mode)
     {
@@ -402,4 +414,36 @@ double compute_input(uint32_t len, bool mode)
       if (len <= 1110) len = 1000;
       return (((double)len - 1500)*MAX_RPM)/1000;
     }
+}
+
+void compute_pose(int32_t a, int32_t b) // Appoximates odometry from deadreckoning. 
+// TODO Accept robot parameters; Resetable coordinate frame; Potect against overflow.
+{
+  static int32_t last_a = 0, last_b = 0;
+  double delta_a_rad = (((double)(a - last_a))/CPR_CONS)*2*PI;
+  double delta_b_rad = (((double)(b - last_b))/CPR_CONS)*2*PI;
+  double s = (delta_a_rad + delta_b_rad)/2;
+  pose.theta = pose.theta + (delta_a_rad-delta_b_rad)/(2*FR_WHEELS_DISTANCE);
+  pose.x = pose.x + s*cos(pose.theta);
+  pose.y = pose.y + s*sin(pose.theta);
+}
+
+void compute_twist(SpeedCmd* s, int32_t m1_speed, int32_t m2_speed)
+{
+  s->lin_vel = ((double)(m1_speed+m2_speed)*WHEEL_DIAMETER)*PI;
+  s->ang_vel = ((double)(m1_speed-m2_speed)*WHEEL_DIAMETER*PI)/(FR_WHEELS_DISTANCE);
+  s->cmd_time = 0;
+}
+
+void compute_odom(nav_msgs::Odometry* odom, Pose p, SpeedCmd s)
+{
+  odom->twist.twist.linear.x = (double)s.lin_vel;
+  odom->twist.twist.angular.x = (double)s.ang_vel;
+  odom->pose.pose.position.x = p.x;
+  odom->pose.pose.position.y = p.y;
+  odom->pose.pose.position.z = 0;
+  odom->pose.pose.orientation.w = cos(p.theta/2);
+  odom->pose.pose.orientation.z = sin(p.theta/2);
+  odom->pose.pose.orientation.x = 0;
+  odom->pose.pose.orientation.y = 0;
 }
