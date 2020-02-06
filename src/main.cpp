@@ -415,7 +415,7 @@ double compute_input(uint32_t len, bool mode) // Calulates speed from RC pulse l
 }
 
 void compute_pose(int32_t a, int32_t b) // Appoximates odometry from deadreckoning. 
-// TODO Accept robot parameters; Resetable coordinate frame; Potect against overflow.
+// TODO Accept robot parameters; Resetable coordinate frame; Protect against overflow.
 {
   static int32_t last_a = 0, last_b = 0;
   double delta_a_rad = (((double)(a - last_a))/CPR_CONS)*2*PI;
@@ -426,10 +426,10 @@ void compute_pose(int32_t a, int32_t b) // Appoximates odometry from deadreckoni
   pose.y = pose.y + s*sin(pose.theta);
 }
 
-void compute_twist(SpeedCmd* s, int32_t m1_speed, int32_t m2_speed) // Appoximates the current speed of robot.
+void compute_twist(SpeedCmd* s, double m1_speed, double m2_speed) // Appoximates the current speed of robot.
 {
-  s->lin_vel = ((double)(m1_speed+m2_speed)*WHEEL_DIAMETER)*PI;
-  s->ang_vel = ((double)(m1_speed-m2_speed)*WHEEL_DIAMETER*PI)/(FR_WHEELS_DISTANCE);
+  s->lin_vel = (m1_speed+m2_speed)*WHEEL_DIAMETER*PI;
+  s->ang_vel = ((m1_speed-m2_speed)*WHEEL_DIAMETER*PI)/(FR_WHEELS_DISTANCE);
   s->cmd_time = 0;
 }
 
